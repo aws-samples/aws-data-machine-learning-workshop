@@ -134,8 +134,9 @@ def invoke_endpoint_for_two_minutes(endpoint_name=None):
         for row in f:
             print(".", end="", flush=True)
             payload = row.rstrip("\n")
+            payload = dict({'inputs':payload})
             response = sm_runtime.invoke_endpoint(
-                EndpointName=endpoint_name, ContentType="text/csv", Body=payload
+                EndpointName=endpoint_name, ContentType="application/json", Body=json.dumps(payload)
             )
             response["Body"].read().decode("utf-8")
             time.sleep(1)
