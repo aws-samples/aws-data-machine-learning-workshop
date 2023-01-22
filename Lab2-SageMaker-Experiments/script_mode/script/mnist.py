@@ -1,23 +1,24 @@
 # ensure that the latest version of the SageMaker SDK is available
-import os
-
-os.system("pip install -U sagemaker")
-
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from os.path import join
+
 import boto3
 import torch
-from torchvision import datasets, transforms
-from sagemaker.session import Session
 from sagemaker.experiments.run import load_run
+from sagemaker.session import Session
+from torchvision import datasets, transforms
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
+
+
+region = os.getenv("AWS_REGION")
 
 if "SAGEMAKER_METRICS_DIRECTORY" in os.environ:
     log_file_handler = logging.FileHandler(
@@ -80,7 +81,13 @@ def log_performance(model, data_loader, device, epoch, run, metric_type="Test"):
 
 
 def train_model(
-    run, train_set, test_set, data_dir="mnist_data", optimizer="sgd", epochs=10, hidden_channels=10
+    run,
+    train_set,
+    test_set,
+    data_dir="mnist_data",
+    optimizer="sgd",
+    epochs=10,
+    hidden_channels=10,
 ):
     """
     Function that trains the CNN classifier to identify the MNIST digits.
@@ -173,13 +180,13 @@ def train_model(
 
 def model_fn(model_dir):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     hidden_channels = int(os.environ.get("hidden_channels", "5"))
     kernel_size = int(os.environ.get("kernel_size", "5"))
     dropout = float(os.environ.get("dropout", "0.5"))
     model = torch.nn.DataParallel(Net(hidden_channels, kernel_size, dropout))
     with open(os.path.join(model_dir, "model.pth"), "rb") as f:
-        #model.load_state_dict(torch.load(f))
+        # model.load_state_dict(torch.load(f))
         model = torch.load(model_dir)
         model.eval()
         return model.to(device)
@@ -189,7 +196,7 @@ def save_model(model, model_dir, run):
     logger.info("Saving the model.")
     path = os.path.join(model_dir, "model.pth")
     # recommended way from http://pytorch.org/docs/master/notes/serialization.html
-    #torch.save(model.cpu().state_dict(), path)
+    # torch.save(model.cpu().state_dict(), path)
     torch.save(model, path)
 
 
@@ -203,18 +210,23 @@ if __name__ == "__main__":
         metavar="N",
         help="number of epochs to train (default: 10)",
     )
-    parser.add_argument("--optimizer", type=str, default="sgd", help="optimizer for training.")
+    parser.add_argument(
+        "--optimizer", type=str, default="sgd", help="optimizer for training."
+    )
     parser.add_argument(
         "--hidden_channels",
         type=int,
         default=10,
         help="number of channels in hidden conv layer",
     )
-    parser.add_argument("--region", type=str, default="us-east-2", help="SageMaker Region")
 
     # Container environment
-    parser.add_argument("--hosts", type=list, default=json.loads(os.environ["SM_HOSTS"]))
-    parser.add_argument("--current-host", type=str, default=os.environ["SM_CURRENT_HOST"])
+    parser.add_argument(
+        "--hosts", type=list, default=json.loads(os.environ["SM_HOSTS"])
+    )
+    parser.add_argument(
+        "--current-host", type=str, default=os.environ["SM_CURRENT_HOST"]
+    )
     parser.add_argument("--model-dir", type=str, default=os.environ["SM_MODEL_DIR"])
     parser.add_argument("--num-gpus", type=int, default=os.environ["SM_NUM_GPUS"])
 
@@ -245,10 +257,13 @@ if __name__ == "__main__":
         download=True,
     )
 
-    session = Session(boto3.session.Session(region_name=args.region))
+    session = Session(boto3.session.Session(region_name=region))
     with load_run(sagemaker_session=session) as run:
         run.log_parameters(
-            {"num_train_samples": len(train_set.data), "num_test_samples": len(test_set.data)}
+            {
+                "num_train_samples": len(train_set.data),
+                "num_test_samples": len(test_set.data),
+            }
         )
         for f in os.listdir(train_set.raw_folder):
             print("Logging", train_set.raw_folder + "/" + f)

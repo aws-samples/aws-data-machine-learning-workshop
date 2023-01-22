@@ -1,49 +1,66 @@
-## define a function to plot comparison of metrics between hyperparameters
-
-# extract the table 
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import seaborn as sns
+import seaborn.objects as so
 from sagemaker.analytics import ExperimentAnalytics
 
-def extract_table(experiment_name,output_metric, parameter_name,hue_name):
-    ## output_metrics: str of metric to be traced
-    ## parameter_names: str of parameter to be analyzed
-    
-    trial_component_analytics = ExperimentAnalytics(experiment_name=experiment_name,parameter_names=[parameter_name]+[hue_name])
-    analytic_table = trial_component_analytics.dataframe()
-    
-    #filter the dataframe further
-    df_cols=list(["TrialComponentName"])+[output_metric]+[parameter_name]+[hue_name]
-    sub_table=analytic_table[df_cols]
-    
-    plot_table=sub_table[sub_table[output_metric]>=0]
 
-    #remove experiment string from the TrialComponentName to make it neater
-    plot_table["run"]=plot_table["TrialComponentName"].str.replace(experiment_name+'-experiment-', '')
-    
-    return plot_table
+def analyze_experiment(
+    experiment_name: str,
+    parameter_names: str,
+    metric_names: str,
+    stat_name: str = "Last",
+):
+    re_expr = f"(?:{'|'.join([f'{k}.*- {stat_name}' for k in metric_names] + parameter_names + ['DisplayName'])})"
 
+    trial_component_analytics = ExperimentAnalytics(
+        experiment_name=experiment_name,
+        parameter_names=parameter_names,
+    )
+    df = trial_component_analytics.dataframe()
+    df = df[df["SourceArn"].isna()]
+    df = df.filter(regex=re_expr)
 
-def plot_table(table,experiment_name,output_metric, parameter_name, hue_name):
-    
-    fig, axes = plt.subplots(1, 2, figsize=(15, 5), sharey=True)
-    fig.suptitle('Experiment Analysis')
+    # join the categorical parameters
+    df_temp = df[parameter_names].select_dtypes("object")
 
-    # scatter plot here
-    sns.scatterplot(ax=axes[0], x=table[parameter_name],y=table[output_metric], hue=table["run"])
-    sns.scatterplot(ax=axes[1], x=table[parameter_name],y=table[output_metric], hue=table[hue_name])
-    
+    cat_col_name = "_".join(df_temp.columns.values)
 
-    plt.tight_layout()
-    plt.legend( title=experiment_name)
-    plt.show()   
-    return 
+    if len(df_temp.columns) > 1:
+        df.loc[:, cat_col_name] = df_temp.astype(str).apply("_".join, axis=1)
+        df = df.drop(columns=df_temp.columns.values)
 
-def analyze_experiment(experiment_name="training-job-experiment-1672305742-bcbe",output_metric="Test:loss - Last", parameter_name="hidden_channels", hue_name="optimizer"):
-    
-    print(experiment_name)   
-    table=extract_table(experiment_name,output_metric, parameter_name,hue_name)
-    print(experiment_name)
-    plot_table(table,experiment_name,output_metric, parameter_name, hue_name )
-    
-    return table
+    ordinal_params = df[parameter_names].select_dtypes("number").columns.tolist()
+    df_plot = df.melt(id_vars=["DisplayName"] + ordinal_params + [cat_col_name])
+    df_plot[["Dataset", "Metrics"]] = (
+        df_plot.variable.str.split(" - ").str[0].str.split(":", expand=True)
+    )
+    f = plt.Figure(
+        figsize=(8, 6 * len(ordinal_params)),
+        facecolor="w",
+        layout="constrained",
+        frameon=True,
+    )
+    f.suptitle("Experiment Analysis")
+    sf = f.subfigures(1, len(ordinal_params))
+
+    if isinstance(sf, mpl.figure.SubFigure):
+        sf = [sf]
+
+    for k, p in zip(sf, ordinal_params):
+
+        (
+            so.Plot(
+                df_plot,
+                y="value",
+                x=p,
+                color=cat_col_name,
+            )
+            .facet(col="Dataset", row="Metrics")
+            .add(so.Dot())
+            .share(y=False)
+            .limit(y=(0, None))
+            .on(k)
+            .plot()
+        )
+    return f
