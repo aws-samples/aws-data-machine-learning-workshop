@@ -1,0 +1,2308 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  This cloudformation template enables SageMaker Studio to launch and connect to EMR clusters.
+  The EMR cluster is launched via Service Catalog.
+  This template is for an account without a pre-existing SageMaker Studio Domain & SageMaker User Profile - it creates these.
+  This template populates Service Catalog with a Product, a LaunchConstrant and a ProductPrincipalAssociation.
+  The Service Catalog Product consists of another cloudformation template for launching EMR, that matches this template (NoStudio)
+  It creates the Studio Domain in a private VPC and establishes connectivity with EMR via No-Auth
+
+Parameters:
+  WSBucketName:
+    Type: String
+  WSBucketPrefix:
+    Type: String
+  UserProfileName:
+    Type: String
+    Description: The user profile name for the SageMaker workshop
+    Default: 'studio-user'
+  ClusterName:
+    Type: String
+    Default: redshift-streaming-cluster
+  DatabaseName:
+    Type: String
+    Default: dev
+    AllowedPattern: '([a-z]|[0-9])+'
+  NumberOfNodes:
+    Type: Number
+    Default: '2'
+  NodeType:
+    Type: String
+    Default: ra3.4xlarge
+    AllowedValues:
+      - ra3.xlplus
+      - ra3.4xlarge
+      - ra3.16xlarge
+  MasterUsername:
+    Type: String
+    Default: awsuser
+    AllowedPattern: '([a-z])([a-z]|[0-9])*'
+    ConstraintDescription: must start with a-z and contain only a-z or 0-9.
+  PreExistingS3BucketToGrantRedshiftAccess:
+    Type: String
+    Default: 'redshift-demos'
+  VpcCIDR:
+    Type: String
+    Default: 10.210.0.0/16
+    MinLength: '9'
+    MaxLength: '18'
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  QSCIDR:
+    Type: String
+    Default: 52.15.247.160/27
+    MinLength: '9'
+    MaxLength: '18'
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  PublicSubnet1CIDR:
+    Type: String
+    Default: 10.210.10.0/24
+    MinLength: '9'
+    MaxLength: '18'
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  PublicSubnet2CIDR:
+    Type: String
+    Default: 10.210.11.0/24
+    MinLength: '9'
+    MaxLength: '18'
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+    Default: 'rsstreaming'
+  ShardCount:
+    Type: Number
+    Default: 2
+    MaxValue: 200
+    MinValue: 1
+  RetentionHours:
+    Type: Number
+    Default: 24
+    MaxValue: 8760
+    MinValue: 24
+
+Mappings:
+  ARNs:
+    us-east-1:
+      arn: arn:aws:sagemaker:us-east-1:081325390199:image/jupyter-server-3
+    us-east-2:
+      arn: arn:aws:sagemaker:us-east-2:429704687514:image/jupyter-server-3
+    us-west-1:
+      arn: arn:aws:sagemaker:us-west-1:742091327244:image/jupyter-server-3
+    us-west-2:
+      arn: arn:aws:sagemaker:us-west-2:236514542706:image/jupyter-server-3
+  VpcConfigurations:
+    cidr:
+      Vpc: 10.0.0.0/16
+      PublicSubnet1: 10.0.10.0/24
+      PrivateSubnet1: 10.0.20.0/24
+  Studio:
+    s3params:
+      S3Bucket: ee-assets-prod-us-east-1
+      S3Key: modules/183f0dce72fc496f85c6215965998db5/v2/
+  ClusterConfigurations:
+    emr:
+      masterInstanceCount: 1
+      BootStrapScriptFile: installpylibs-v2.sh
+      StepScriptFile: loadhive.sh
+  RegionMap:
+    us-east-1:
+      datascience: "arn:aws:sagemaker:us-east-1:081325390199:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:us-east-1:663277389841:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:081325390199:image/jupyter-server-3"
+    us-east-2:
+      datascience: "arn:aws:sagemaker:us-east-2:429704687514:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:us-east-2:415577184552:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:429704687514:image/jupyter-server-3"
+    us-west-1:
+      datascience: "arn:aws:sagemaker:us-west-1:742091327244:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:us-west-1:926135532090:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:742091327244:image/jupyter-server-3"
+    us-west-2:
+      datascience: "arn:aws:sagemaker:us-west-2:236514542706:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:us-west-2:174368400705:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:236514542706:image/jupyter-server-3"
+    af-south-1:
+      datascience: "arn:aws:sagemaker:af-south-1:559312083959:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:af-south-1:143210264188:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:559312083959:image/jupyter-server-3"
+    ap-east-1:
+      datascience: "arn:aws:sagemaker:ap-east-1:493642496378:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:ap-east-1:707077482487:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:493642496378:image/jupyter-server-3"
+    ap-south-1:
+      datascience: "arn:aws:sagemaker:ap-south-1:394103062818:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:ap-south-1:089933028263:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:394103062818:image/jupyter-server-3"
+    ap-northeast-2:
+      datascience: "arn:aws:sagemaker:ap-northeast-2:806072073708:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:ap-northeast-2:131546521161:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:806072073708:image/jupyter-server-3"
+    ap-southeast-1:
+      datascience: "arn:aws:sagemaker:ap-southeast-1:492261229750:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:ap-southeast-1:119527597002:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:492261229750:image/jupyter-server-3"
+    ap-southeast-2:
+      datascience: "arn:aws:sagemaker:ap-southeast-2:452832661640:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:ap-southeast-2:422173101802:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:452832661640:image/jupyter-server-3"
+    ap-northeast-1:
+      datascience: "arn:aws:sagemaker:ap-northeast-1:102112518831:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:ap-northeast-1:649008135260:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:102112518831:image/jupyter-server-3"
+    ca-central-1:
+      datascience: "arn:aws:sagemaker:ca-central-1:310906938811:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:ca-central-1:557239378090:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:310906938811:image/jupyter-server-3"
+    eu-central-1:
+      datascience: "arn:aws:sagemaker:eu-central-1:936697816551:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:eu-central-1:024640144536:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:936697816551:image/jupyter-server-3"
+    eu-west-1:
+      datascience: "arn:aws:sagemaker:eu-west-1:470317259841:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:eu-west-1:245179582081:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:470317259841:image/jupyter-server-3"
+    eu-west-2:
+      datascience: "arn:aws:sagemaker:eu-west-2:712779665605:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:eu-west-2:894491911112:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:712779665605:image/jupyter-server-3"
+    eu-west-3:
+      datascience: "arn:aws:sagemaker:eu-west-3:615547856133:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:eu-west-3:807237891255:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:615547856133:image/jupyter-server-3"
+    eu-north-1:
+      datascience: "arn:aws:sagemaker:eu-north-1:243637512696:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:eu-north-1:054986407534:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:243637512696:image/jupyter-server-3"
+    eu-south-1:
+      datascience: "arn:aws:sagemaker:eu-south-1:592751261982:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:eu-south-1:488287956546:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:592751261982:image/jupyter-server-3"
+    sa-east-1:
+      datascience: "arn:aws:sagemaker:sa-east-1:782484402741:image/datascience-1.0"
+      datawrangler: "arn:aws:sagemaker:sa-east-1:424196993095:image/sagemaker-data-wrangler-1.0"
+      jupyterserver: "arn:aws:sagemaker:us-east-1:782484402741:image/jupyter-server-3"
+  Redshift: # static values related to the redshift cluster
+    Port:
+      Number: 5439
+    SnapshotRetention:
+      Days: 10
+    Accessible:
+      Public: true
+    Encrypted:
+      Kms: true
+    Password:
+      Length: 32
+    AuditLogging:
+      ExpirationDays: 500
+      TransitionDays: 60
+    CPUUtilizationAlarm:
+      Threshold: 95
+    AZ:
+      Relocation: false
+    VPC:
+      EnhancedRouting: false
+
+Conditions:
+  RedshiftSingleNodeClusterCondition:
+    Fn::Equals:
+      - Ref: NumberOfNodes
+      - '1'
+  IsPreExistingS3Bucket:
+    Fn::Not:
+      - Fn::Equals:
+          - 'N/A'
+          - Ref: PreExistingS3BucketToGrantRedshiftAccess
+
+  IsRA3:
+    Fn::Equals:
+      - !Select [0, !Split [".", !Ref NodeType]]
+      - 'ra3'
+
+
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join ["-", ["sm-emr-existing-cluster", !Select [4, !Split ["-", !Select [2, !Split ["/", !Ref AWS::StackId]]]]]]
+
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !FindInMap
+        - VpcConfigurations
+        - cidr
+        - Vpc
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-VPC'
+
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-IGW'
+
+  InternetGatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ''
+      CidrBlock: !FindInMap
+        - VpcConfigurations
+        - cidr
+        - PublicSubnet1
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName} Public Subnet (AZ1)'
+
+  PrivateSubnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ''
+      CidrBlock: !FindInMap
+        - VpcConfigurations
+        - cidr
+        - PrivateSubnet1
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName} Private Subnet (AZ1)'
+
+  NatGateway1EIP:
+    Type: 'AWS::EC2::EIP'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Type: 'AWS::EC2::NatGateway'
+    Properties:
+      AllocationId: !GetAtt
+        - NatGateway1EIP
+        - AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName} Public Routes'
+
+  DefaultPublicRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PrivateRouteTable1:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName} Private Routes (AZ1)'
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateSubnet1InternetRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  S3Endpoint:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action:
+              - '*'
+            Resource:
+              - '*'
+      VpcId: !Ref VPC
+      RouteTableIds:
+        - !Ref PrivateRouteTable1
+
+  SageMakerInstanceSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: SMSG
+      GroupDescription: Security group with no ingress rule
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+
+  SageMakerInstanceSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: '-1'
+      GroupId: !Ref SageMakerInstanceSecurityGroup
+      SourceSecurityGroupId: !Ref SageMakerInstanceSecurityGroup
+
+  VPCEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow TLS for VPC Endpoint
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-endpoint-security-group
+
+  EndpointSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: '-1'
+      GroupId: !Ref VPCEndpointSecurityGroup
+      SourceSecurityGroupId: !Ref SageMakerInstanceSecurityGroup
+
+  SageMakerExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - sagemaker.amazonaws.com
+                - glue.amazonaws.com
+                - events.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${AWS::StackName}-studio-custom-policy'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticmapreduce:ListInstances
+                  - elasticmapreduce:DescribeCluster
+                  - elasticmapreduce:DescribeSecurityConfiguration
+                  - elasticmapreduce:CreatePersistentAppUI
+                  - elasticmapreduce:DescribePersistentAppUI
+                  - elasticmapreduce:GetPersistentAppUIPresignedURL
+                  - elasticmapreduce:GetOnClusterAppUIPresignedURL
+                  - elasticmapreduce:ListClusters
+                  - iam:CreateServiceLinkedRole
+                  - iam:GetRole
+                Resource: '*'
+              - Sid: AllowPassRoleSageMaker
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                  - iam:GetRole
+                  - sts:GetCallerIdentity
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - elasticmapreduce:DescribeCluster
+                  - elasticmapreduce:ListInstanceGroups
+                Resource: !Sub "arn:${AWS::Partition}:elasticmapreduce:*:*:cluster/*"
+              - Effect: Allow
+                Action:
+                  - elasticmapreduce:ListClusters
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - events:TagResource
+                  - events:DeleteRule
+                  - events:PutTargets
+                  - events:DescribeRule
+                  - events:PutRule
+                  - events:RemoveTargets
+                  - events:DisableRule
+                  - events:EnableRule
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/sagemaker:is-scheduling-notebook-job: 'true'
+              - Effect:  Allow
+                Action: iam:PassRole
+                Resource: '*'
+                Condition:
+                  StringLike:
+                    iam:PassedToService: events.amazonaws.com
+              - Effect: Allow
+                Action: sagemaker:ListTags
+                Resource: "arn:aws:sagemaker:*:*:user-profile/*/*"
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSageMakerFullAccess"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AwsGlueSessionUserRestrictedServiceRole"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonS3ReadOnlyAccess"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AWSCloudFormationReadOnlyAccess"
+
+  VPCEndpointSagemakerAPI:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: '*'
+            Resource: '*'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sagemaker.api'
+      VpcId: !Ref VPC
+
+  VPCEndpointSageMakerRuntime:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: '*'
+            Resource: '*'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sagemaker.runtime'
+      VpcId: !Ref VPC
+
+  VPCEndpointSTS:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: '*'
+            Resource: '*'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sts'
+      VpcId: !Ref VPC
+
+  VPCEndpointCW:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: '*'
+            Resource: '*'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.monitoring'
+      VpcId: !Ref VPC
+
+  VPCEndpointCWL:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: '*'
+            Resource: '*'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.logs'
+      VpcId: !Ref VPC
+
+  VPCEndpointECR:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: '*'
+            Resource: '*'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecr.dkr'
+      VpcId: !Ref VPC
+
+  VPCEndpointECRAPI:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: '*'
+            Resource: '*'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ecr.api'
+      VpcId: !Ref VPC
+
+  StudioDomain:
+    Type: AWS::SageMaker::Domain
+    Properties:
+      AppNetworkAccessType: VpcOnly
+      AuthMode: IAM
+      DomainName: StudioDomain-lab1
+      VpcId: !Ref VPC
+      SubnetIds:
+        - !Ref PrivateSubnet1
+      DefaultUserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+        JupyterServerAppSettings:
+          DefaultResourceSpec:
+            SageMakerImageArn:
+              Fn::FindInMap:
+              - ARNs
+              - !Ref AWS::Region
+              - arn
+        SecurityGroups:
+          - !Ref SageMakerInstanceSecurityGroup
+
+  StudioUserProfile:
+    Type: AWS::SageMaker::UserProfile
+    Properties:
+      DomainId: !Ref StudioDomain
+      UserProfileName: !Ref UserProfileName
+      UserSettings:
+        ExecutionRole: !GetAtt SageMakerExecutionRole.Arn
+
+####################################################################################################################
+#### LifeCycle Configuration to download notebooks
+####################################################################################################################
+  LifeCycleConfigLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Sub 'LifeCycleConfigLambdaPolicy-${AWS::StackName}'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sagemaker:CreateStudioLifecycleConfig'
+                  - 'sagemaker:DeleteStudioLifecycleConfig'
+                Resource: !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:studio-lifecycle-config/*'
+              - Effect: Allow
+                Action:
+                  - 'sagemaker:UpdateUserProfile'
+                  - 'sagemaker:DeleteUserProfile'
+                Resource: !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:user-profile/*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3Bucket}/*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  LifeCycleConfigLambda:
+    DependsOn:
+      - StudioUserProfile
+      - LifeCycleConfigLambdaRole
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Description: Add LifeCycle Configuration to copy NB files to Studio
+      Handler: index.lambda_handler
+      Role: !GetAtt LifeCycleConfigLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 60
+      Code:
+        ZipFile: !Join
+          - |+
+
+          - - 'import boto3'
+            - 'import base64'
+            - 'import cfnresponse'
+            - ''
+            - 'client = boto3.client(''sagemaker'')'
+            - 'lcc_up1 = ''\n''.join(('
+            - '    ''#!/bin/bash'','
+            - '    '''','
+            - '    ''set -ex'','
+            - '    '''','
+            - '    ''if [ ! -z "${SM_JOB_DEF_VERSION}" ]'','
+            - '    ''then'','
+            - '    ''   echo "Running in job mode, skip lcc"'','
+            - '    ''else'','
+            - !Sub '    ''   aws s3 cp s3://${WSBucketName}/${WSBucketPrefix}notebooks . --recursive'','
+            - '    ''   echo "Files copied from S3"'','
+            - '    ''fi'','
+            - '    '''','
+            - '))'
+            - ''
+            - !Sub 'lcc_name_up1 = "${AWS::StackName}-copy-notebooks"'
+            - !Sub 'up1 = "${StudioUserProfile}"'
+            - ''
+            - 'def get_lcc_base64_string(lcc_string):'
+            - '    lcc_bytes = lcc_string.encode("ascii")'
+            - '    base64_lcc_bytes = base64.b64encode(lcc_bytes)'
+            - '    base64_lcc_string = base64_lcc_bytes.decode("ascii")'
+            - '    return base64_lcc_string'
+            - ''
+            - ''
+            - 'def apply_lcc_to_user_profile(base64_lcc_string, lcc_config_name, profile):'
+            - '    response = client.create_studio_lifecycle_config('
+            - '        StudioLifecycleConfigName=lcc_config_name,'
+            - '        StudioLifecycleConfigContent=base64_lcc_string,'
+            - '        StudioLifecycleConfigAppType="JupyterServer",'
+            - '   )'
+            - ''
+            - '    lcc_arn = response["StudioLifecycleConfigArn"]'
+            - '    update_up = client.update_user_profile('
+            - '        DomainId=profile.split("|")[1],'
+            - '        UserProfileName=profile.split("|")[0],'
+            - '        UserSettings={'
+            - '            "JupyterServerAppSettings": {'
+            - '                "DefaultResourceSpec": {"LifecycleConfigArn": lcc_arn},'
+            - '                "LifecycleConfigArns": [lcc_arn]'
+            - '            }'
+            - '        }'
+            - '    )'
+            - '    return update_up'
+            - ''
+            - ''
+            - 'def lambda_handler(event, context):'
+            - '    print(event)'
+            - '    try:'
+            - '        base64_lcc_up1_string = get_lcc_base64_string(lcc_up1)'
+            - '        updated_up1 = apply_lcc_to_user_profile('
+            - '            base64_lcc_up1_string,'
+            - '            lcc_name_up1,'
+            - '            up1'
+            - '        )'
+            - '        print("Response User Profile LCC update for UP1")'
+            - '        print(updated_up1)'
+            - ''
+            - '        response_value = 120'
+            - '        response_data = {"Data": response_value}'
+            - '        cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)'
+            - '    except Exception as e:'
+            - '        if "RequestType" in event:'
+            - '            if event["RequestType"] == "Delete":'
+            - '                try:'
+            - '                    response1 = client.delete_studio_lifecycle_config('
+            - '                        StudioLifecycleConfigName=lcc_name_up1'
+            - '                    )'
+            - '                    print(response1)'
+            - '                    response_data = {}'
+            - '                    cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)'
+            - '                    return'
+            - '                except Exception as e2:'
+            - '                    print(e2)'
+            - '                    response_data = e2'
+            - '                    cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)'
+            - '                    return'
+            - '        print(e)'
+            - '        response_data = {"Data": str(e)}'
+            - '        cfnresponse.send(event, context, cfnresponse.FAILED, response_data)'
+
+  LifeCycleConfigLambdaInvoke:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: LifeCycleConfigLambda
+    Version: "1.0"
+    Properties:
+      ServiceToken: !GetAtt LifeCycleConfigLambda.Arn
+
+
+#   # Products populated to Service Catalog
+#   ###################################################
+#
+#   SageMakerStudioEMRNoAuthProduct:
+#     Type: AWS::ServiceCatalog::CloudFormationProduct
+#     Properties:
+#       Owner: AWS
+#       Name: SageMaker Studio Domain No Auth EMR
+#       ProvisioningArtifactParameters:
+#         - Name: SageMaker Studio Domain No Auth EMR
+#           Description: Provisions a SageMaker domain and No Auth EMR Cluster
+#           Info:
+#             LoadTemplateFromURL: !Sub 'https://${WSBucketName}.s3.amazonaws.com/${WSBucketPrefix}AutoTerminate66.yaml'
+#       Tags:
+#         - Key: "sagemaker:studio-visibility:emr"
+#           Value: "true"
+#
+#   SageMakerStudioEMRNoAuthProductPortfolio:
+#     Type: AWS::ServiceCatalog::Portfolio
+#     Properties:
+#       ProviderName: AWS
+#       DisplayName: SageMaker Product Portfolio
+#
+#   SageMakerStudioEMRNoAuthProductPortfolioAssociation:
+#     Type: AWS::ServiceCatalog::PortfolioProductAssociation
+#     Properties:
+#       PortfolioId: !Ref SageMakerStudioEMRNoAuthProductPortfolio
+#       ProductId: !Ref SageMakerStudioEMRNoAuthProduct
+#
+#   EMRNoAuthLaunchConstraint:
+#     Type: 'AWS::IAM::Role'
+#     Properties:
+#       Policies:
+#         - PolicyDocument:
+#             Statement:
+#             - Action:
+#               - s3:*
+#               Effect: Allow
+#               Resource:
+#               - !Sub "arn:${AWS::Partition}:s3:::sm-emr-workshop-cluster-*/*"
+#               - !Sub "arn:${AWS::Partition}:s3:::sm-emr-workshop-cluster-*"
+#             - Action:
+#               - s3:GetObject
+#               Effect: Allow
+#               Resource: "*"
+#               Condition:
+#                 StringEquals:
+#                   s3:ExistingObjectTag/servicecatalog:provisioning: 'true'
+#           PolicyName: !Sub ${AWS::StackName}-${AWS::Region}-S3-Policy
+#         - PolicyDocument:
+#             Statement:
+#               - Action:
+#                   - "sns:Publish"
+#                 Effect: Allow
+#                 Resource: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:*"
+#             Version: "2012-10-17"
+#           PolicyName: SNSPublishPermissions
+#         - PolicyDocument:
+#             Statement:
+#               - Action:
+#                   - "ec2:CreateSecurityGroup"
+#                   - "ec2:RevokeSecurityGroupEgress"
+#                   - "ec2:DeleteSecurityGroup"
+#                   - "ec2:createTags"
+#                   - "ec2:AuthorizeSecurityGroupEgress"
+#                   - "ec2:AuthorizeSecurityGroupIngress"
+#                   - "ec2:RevokeSecurityGroupIngress"
+#                 Effect: Allow
+#                 Resource: "*"
+#             Version: "2012-10-17"
+#           PolicyName: EC2Permissions
+#         - PolicyDocument:
+#             Statement:
+#               - Action:
+#                   - "lambda:CreateFunction"
+#                   - "lambda:TagResource"
+#                   - "lambda:InvokeFunction"
+#                   - "lambda:DeleteFunction"
+#                   - "lambda:GetFunction"
+#                 Effect: Allow
+#                 Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:SC-*"
+#             Version: "2012-10-17"
+#           PolicyName: LambdaPermissions
+#         - PolicyDocument:
+#             Statement:
+#               - Action:
+#                   - "elasticmapreduce:RunJobFlow"
+#                 Effect: Allow
+#                 Resource: !Sub "arn:${AWS::Partition}:elasticmapreduce:${AWS::Region}:${AWS::AccountId}:cluster/*"
+#             Version: "2012-10-17"
+#           PolicyName: EMRRunJobFlowPermissions
+#         - PolicyDocument:
+#             Statement:
+#               - Action:
+#                   - "iam:CreateRole"
+#                   - "iam:DetachRolePolicy"
+#                   - "iam:AttachRolePolicy"
+#                   - "iam:DeleteRolePolicy"
+#                   - "iam:DeleteRole"
+#                   - "iam:PutRolePolicy"
+#                   - "iam:PassRole"
+#                 Effect: Allow
+#                 Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/SC-*"
+#               - Action:
+#                   - "iam:CreateInstanceProfile"
+#                   - "iam:RemoveRoleFromInstanceProfile"
+#                   - "iam:DeleteInstanceProfile"
+#                   - "iam:AddRoleToInstanceProfile"
+#                 Effect: Allow
+#                 Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/SC-*"
+#             Version: "2012-10-17"
+#           PolicyName: IAMPermissions
+#       AssumeRolePolicyDocument:
+#         Version: "2012-10-17"
+#         Statement:
+#           -
+#             Effect: "Allow"
+#             Principal:
+#               Service:
+#                 - "servicecatalog.amazonaws.com"
+#             Action:
+#               - "sts:AssumeRole"
+#       ManagedPolicyArns:
+#         - "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AWSServiceCatalogAdminFullAccess"
+#         - "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AmazonEMRFullAccessPolicy_v2"
+#
+# # Sets the principal who can initate provisioning from Service Studio
+# #######################################################################
+#
+#   SageMakerStudioEMRNoAuthProductPortfolioPrincipalAssociation:
+#     Type: AWS::ServiceCatalog::PortfolioPrincipalAssociation
+#     Properties:
+#       PrincipalARN: !GetAtt SageMakerExecutionRole.Arn
+#       PortfolioId: !Ref SageMakerStudioEMRNoAuthProductPortfolio
+#       PrincipalType: IAM
+#
+#   SageMakerStudioPortfolioLaunchRoleConstraint:
+#     Type: AWS::ServiceCatalog::LaunchRoleConstraint
+#     Properties:
+#       PortfolioId: !Ref SageMakerStudioEMRNoAuthProductPortfolio
+#       ProductId: !Ref SageMakerStudioEMRNoAuthProduct
+#       RoleArn: !GetAtt EMRNoAuthLaunchConstraint.Arn
+#       Description: Role used for provisioning
+
+# Deploys an "Existing" EMR Cluster
+#######################################################################
+  masterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EMR Master SG
+      SecurityGroupEgress:
+      - IpProtocol: -1
+        FromPort: -1
+        ToPort: -1
+        CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+
+  slaveSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EMR Slave SG
+      SecurityGroupEgress:
+      - IpProtocol: -1
+        FromPort: -1
+        ToPort: -1
+        CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+
+  emrServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EMR Service Access SG
+      SecurityGroupEgress:
+      - IpProtocol: -1
+        FromPort: -1
+        ToPort: -1
+        CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+
+  emrMasterIngressSelfICMP:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: masterSecurityGroup
+      IpProtocol: icmp
+      FromPort: -1
+      ToPort: -1
+      SourceSecurityGroupId:
+        Ref: masterSecurityGroup
+
+  emrMasterIngressSlaveICMP:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: masterSecurityGroup
+      IpProtocol: icmp
+      FromPort: -1
+      ToPort: -1
+      SourceSecurityGroupId:
+        Ref: slaveSecurityGroup
+
+  emrMasterIngressSelfAllTcp:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: masterSecurityGroup
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId:
+        Ref: masterSecurityGroup
+
+  emrMasterIngressSlaveAllTcp:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: masterSecurityGroup
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId:
+        Ref: slaveSecurityGroup
+
+  emrMasterIngressSelfAllUdp:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: masterSecurityGroup
+      IpProtocol: udp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId:
+        Ref: masterSecurityGroup
+
+  emrMasterIngressSlaveAllUdp:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: masterSecurityGroup
+      IpProtocol: udp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId:
+        Ref: slaveSecurityGroup
+
+  emrMasterIngressLivySG:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: masterSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8998
+      ToPort: 8998
+      SourceSecurityGroupId: !Ref SageMakerInstanceSecurityGroup
+
+  emrMasterIngressHiveSG:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: masterSecurityGroup
+      IpProtocol: tcp
+      FromPort: 10000
+      ToPort: 10000
+      SourceSecurityGroupId: !Ref SageMakerInstanceSecurityGroup
+
+  emrMasterIngressServiceSg:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: masterSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8443
+      ToPort: 8443
+      SourceSecurityGroupId:
+        Ref: emrServiceSecurityGroup
+
+  emrServiceIngressMasterSg:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: emrServiceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 9443
+      ToPort: 9443
+      SourceSecurityGroupId:
+        Ref: masterSecurityGroup
+
+  emrServiceEgressMaster:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId:
+        Ref: emrServiceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8443
+      ToPort: 8443
+      DestinationSecurityGroupId:
+        Ref: masterSecurityGroup
+
+  emrServiceEgressSlave:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId:
+        Ref: emrServiceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8443
+      ToPort: 8443
+      DestinationSecurityGroupId:
+        Ref: slaveSecurityGroup
+
+  emrSlaveIngressSelfICMP:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: slaveSecurityGroup
+      IpProtocol: icmp
+      FromPort: -1
+      ToPort: -1
+      SourceSecurityGroupId:
+        Ref: slaveSecurityGroup
+
+  emrSlaveIngressMasterICMP:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: slaveSecurityGroup
+      IpProtocol: icmp
+      FromPort: -1
+      ToPort: -1
+      SourceSecurityGroupId:
+        Ref: masterSecurityGroup
+
+  emrSlaveIngressSelfAllTcp:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: slaveSecurityGroup
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId:
+        Ref: slaveSecurityGroup
+
+  emrSlaveIngressMasterAllTcp:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: slaveSecurityGroup
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId:
+        Ref: masterSecurityGroup
+
+  emrSlaveIngressSelfAllUdp:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: slaveSecurityGroup
+      IpProtocol: udp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId:
+        Ref: slaveSecurityGroup
+
+  emrSlaveIngressMasterAllUdp:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: slaveSecurityGroup
+      IpProtocol: udp
+      FromPort: 0
+      ToPort: 65535
+      SourceSecurityGroupId:
+        Ref: masterSecurityGroup
+
+  emrSlaveIngressServiceSg:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Ref: slaveSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8443
+      ToPort: 8443
+      SourceSecurityGroupId:
+        Ref: emrServiceSecurityGroup
+
+  EMRClusterServiceRole:
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - elasticmapreduce.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceRole
+      Path: "/"
+    Type: AWS::IAM::Role
+
+  EMRClusterinstanceProfile:
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: EMRClusterinstanceProfileRole
+    Type: AWS::IAM::InstanceProfile
+
+  EMRClusterinstanceProfileRole:
+    Properties:
+      RoleName:
+        Fn::Sub: "${AWS::StackName}-EMRClusterinstanceProfileRole"
+      AssumeRolePolicyDocument:
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+        Version: '2012-10-17'
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceforEC2Role
+      Path: "/"
+    Type: AWS::IAM::Role
+
+  allowEMRFSAccessForUser1:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName:
+        Fn::Sub: "${AWS::StackName}-allowEMRFSAccessForUser1"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            AWS:
+              Fn::Sub: arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-EMRClusterinstanceProfileRole
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName:
+          Fn::Sub: "${AWS::StackName}-emrFS-user1"
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Action:
+            - s3:ListBucket
+            Resource:
+            - Fn::Sub: arn:aws:s3:::${S3Bucket}
+            Effect: Allow
+          - Action:
+            - s3:*
+            Resource:
+            - Fn::Sub: arn:aws:s3:::${S3Bucket}/*
+            Effect: Allow
+
+  # Copy bootstrapping scripts so EMR can be stood up in any supported region
+  ###################################################
+  CopyZips:
+    Type: Custom::CopyZips
+    Properties:
+      ServiceToken:
+        Fn::GetAtt: CopyZipsFunction.Arn
+      DestBucket:
+        Ref: S3Bucket
+      SourceBucket:
+        Fn::FindInMap:
+        - Studio
+        - s3params
+        - S3Bucket
+      Prefix:
+        Fn::FindInMap:
+        - Studio
+        - s3params
+        - S3Key
+      Objects:
+      - Fn::FindInMap:
+        - ClusterConfigurations
+        - emr
+        - BootStrapScriptFile
+      - Fn::FindInMap:
+        - ClusterConfigurations
+        - emr
+        - StepScriptFile
+
+  CopyZipsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Path: "/"
+      Policies:
+      - PolicyName: lambda-copier
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            Resource: "*"
+          - Effect: Allow
+            Action:
+            - s3:PutObject
+            - s3:DeleteObject
+            Resource:
+            - Fn::Sub: arn:aws:s3:::${S3Bucket}/*
+
+  CopyZipsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Copies objects from a source S3 bucket to a destination
+      Handler: index.handler
+      Runtime: python3.8
+      Role:
+        Fn::GetAtt: CopyZipsRole.Arn
+      Timeout: 900
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          import threading
+          import boto3
+          import cfnresponse
+          def copy_objects(source_bucket, dest_bucket, prefix, objects):
+              s3 = boto3.client('s3')
+              for o in objects:
+                  key = prefix + o
+                  copy_source = {
+                      'Bucket': source_bucket,
+                      'Key': key
+                  }
+                  print('copy_source: %s' % copy_source)
+                  print('dest_bucket = %s'%dest_bucket)
+                  print('key = %s' %key)
+                  s3.copy_object(CopySource=copy_source, Bucket=dest_bucket,
+                        Key=key)
+          def delete_objects(bucket, prefix, objects):
+              s3 = boto3.client('s3')
+              objects = {'Objects': [{'Key': prefix + o} for o in objects]}
+              s3.delete_objects(Bucket=bucket, Delete=objects)
+          def timeout(event, context):
+              logging.error('Execution is about to time out, sending failure response to CloudFormation')
+              cfnresponse.send(event, context, cfnresponse.FAILED, {}, None)
+          def handler(event, context):
+              # make sure we send a failure to CloudFormation if the function
+              # is going to timeout
+              timer = threading.Timer((context.get_remaining_time_in_millis()
+                        / 1000.00) - 0.5, timeout, args=[event, context])
+              timer.start()
+              print('Received event: %s' % json.dumps(event))
+              status = cfnresponse.SUCCESS
+              try:
+                  source_bucket = event['ResourceProperties']['SourceBucket']
+                  dest_bucket = event['ResourceProperties']['DestBucket']
+                  prefix = event['ResourceProperties']['Prefix']
+                  objects = event['ResourceProperties']['Objects']
+                  if event['RequestType'] == 'Delete':
+                      delete_objects(dest_bucket, prefix, objects)
+                  else:
+                      copy_objects(source_bucket, dest_bucket, prefix, objects)
+              except Exception as e:
+                  logging.error('Exception: %s' % e, exc_info=True)
+                  status = cfnresponse.FAILED
+              finally:
+                  timer.cancel()
+                  cfnresponse.send(event, context, status, {}, None)
+
+  # Provisioned Cluster
+  ###################################################
+
+  EMRCluster:
+    Type: AWS::EMR::Cluster
+    DependsOn:
+    - CopyZips
+    Properties:
+      Name: "ExistingCluster"
+      Applications:
+      - Name: Spark
+      - Name: Hive
+      - Name: Livy
+      BootstrapActions:
+      - Name: Dummy bootstrap action
+        ScriptBootstrapAction:
+          Args:
+          - dummy
+          - parameter
+          Path:
+            Fn::Sub: s3://${S3Bucket}/modules/183f0dce72fc496f85c6215965998db5/v2/installpylibs-v2.sh
+      AutoScalingRole: EMR_AutoScaling_DefaultRole
+      Configurations:
+      - Classification: livy-conf
+        ConfigurationProperties:
+          livy.server.session.timeout: 12h
+      EbsRootVolumeSize: 100
+      Instances:
+        CoreInstanceGroup:
+          EbsConfiguration:
+            EbsBlockDeviceConfigs:
+            - VolumeSpecification:
+                SizeInGB: '320'
+                VolumeType: gp2
+              VolumesPerInstance: '1'
+            EbsOptimized: 'true'
+          InstanceCount: '3'
+          InstanceType: 'm5.xlarge'
+          Market: ON_DEMAND
+          Name: coreNode
+        MasterInstanceGroup:
+          EbsConfiguration:
+            EbsBlockDeviceConfigs:
+            - VolumeSpecification:
+                SizeInGB: '320'
+                VolumeType: gp2
+              VolumesPerInstance: '1'
+            EbsOptimized: 'true'
+          InstanceCount: 1
+          InstanceType: "m5.xlarge"
+          Market: ON_DEMAND
+          Name: masterNode
+        Ec2SubnetId: !Ref PrivateSubnet1
+        EmrManagedMasterSecurityGroup:
+          Ref: masterSecurityGroup
+        EmrManagedSlaveSecurityGroup:
+          Ref: slaveSecurityGroup
+        ServiceAccessSecurityGroup:
+          Ref: emrServiceSecurityGroup
+        TerminationProtected: false
+      JobFlowRole:
+        Ref: EMRClusterinstanceProfile
+      LogUri:
+        Fn::Sub: s3://${S3Bucket}/artifacts/emr-cluster/
+      ReleaseLabel: "emr-6.6.0"
+      ServiceRole:
+        Ref: EMRClusterServiceRole
+      VisibleToAllUsers: true
+      Steps:
+      - ActionOnFailure: CONTINUE
+        HadoopJarStep:
+          Args:
+          - Fn::Sub: s3://${S3Bucket}/modules/183f0dce72fc496f85c6215965998db5/v2/loadhive.sh
+          Jar:
+            Fn::Sub: s3://${AWS::Region}.elasticmapreduce/libs/script-runner/script-runner.jar
+          MainClass: ''
+        Name: run any bash or java job in spark
+
+# RedShift Kinesis Resources
+#######################################################################
+  RedShiftVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} RedShiftVPC
+
+  RedShiftInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+
+  RedShiftInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref RedShiftInternetGateway
+      VpcId: !Ref RedShiftVPC
+
+  RedShiftPublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref RedShiftVPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: !Ref PublicSubnet1CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Subnet (AZ1)
+
+  RedShiftPublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref RedShiftVPC
+      AvailabilityZone: !Select [ 1, !GetAZs  '' ]
+      CidrBlock: !Ref PublicSubnet2CIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Subnet (AZ2)
+
+  PrimaryNatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: RedShiftInternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  SecondaryNatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: RedShiftInternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  PrimaryNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt PrimaryNatGatewayEIP.AllocationId
+      SubnetId: !Ref RedShiftPublicSubnet1
+
+  SecondaryNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt SecondaryNatGatewayEIP.AllocationId
+      SubnetId: !Ref RedShiftPublicSubnet2
+
+  RedshiftPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref RedShiftVPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName} Public Routes
+
+  RedshiftDefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: RedShiftInternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RedshiftPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref RedShiftInternetGateway
+
+  RFTPublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RedshiftPublicRouteTable
+      SubnetId: !Ref RedShiftPublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RedshiftPublicRouteTable
+      SubnetId: !Ref RedShiftPublicSubnet2
+
+  SecurityGroupRedshift:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: security group associated to Amazon Redshift
+      VpcId: !Ref RedShiftVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !FindInMap [ Redshift, Port, Number]
+          ToPort: !FindInMap [ Redshift, Port, Number]
+          CidrIp: !Ref VpcCIDR
+          Description: 'Redshift Access to on prem users CIDR'
+        - IpProtocol: tcp
+          FromPort: !FindInMap [ Redshift, Port, Number]
+          ToPort: !FindInMap [ Redshift, Port, Number]
+          CidrIp: 52.23.63.224/27
+          Description: 'Redshift Access to QuickSight ue1'
+        - IpProtocol: tcp
+          FromPort: !FindInMap [ Redshift, Port, Number]
+          ToPort: !FindInMap [ Redshift, Port, Number]
+          CidrIp: 54.70.204.128/27
+          Description: 'Redshift Access to QuickSight uw1'
+        - IpProtocol: tcp
+          FromPort: !FindInMap [ Redshift, Port, Number]
+          ToPort: !FindInMap [ Redshift, Port, Number]
+          CidrIp: 52.15.247.160/27
+          Description: 'Redshift Access to QuickSight ue2'
+
+  SecurityGroupSelfReference:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Self Referencing Rule
+      IpProtocol: -1
+      FromPort: -1
+      ToPort: -1
+      GroupId: !GetAtt [SecurityGroupRedshift, GroupId]
+      SourceSecurityGroupId: !GetAtt [SecurityGroupRedshift, GroupId]
+
+  KdsDataStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: cust-payment-txn-stream
+      RetentionPeriodHours:
+        Ref: RetentionHours
+      ShardCount:
+        Ref: ShardCount
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: alias/aws/kinesis
+
+  RedshiftS3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Name
+          Value:
+            !Join [
+              '-',
+              [
+                !Ref 'AWS::StackName',
+                'RedshiftS3Bucket',
+              ],
+            ]
+
+  RedshiftAccessIamPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - redshift:GetClusterCredentials
+            Resource:
+              - !Sub arn:aws:redshift:${AWS::Region}:${AWS::AccountId}:cluster:${ClusterName}
+              - !Sub arn:aws:redshift:${AWS::Region}:${AWS::AccountId}:dbname:${ClusterName}/${DatabaseName}
+              - !Sub arn:aws:redshift:${AWS::Region}:${AWS::AccountId}:dbuser:${ClusterName}/${MasterUsername}
+          - Effect: Allow
+            Action:
+              - iam:PassRole
+              - ec2:Describe*
+              - redshift:restoreFromClusterSnapshot
+              - redshift:describeClusterSnapshots
+              - redshift-data:ExecuteStatement
+              - redshift-data:ListStatements
+              - redshift-data:GetStatementResult
+              - redshift-data:DescribeStatement
+            Resource:
+              - '*'
+
+  RedshiftBucketAccessIamPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Action:
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListMultipartUploadParts
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+            Resource:
+              - !Sub "arn:aws:s3:::${RedshiftS3Bucket}"
+              - !Sub "arn:aws:s3:::${RedshiftS3Bucket}/*"
+              - !If
+                - IsPreExistingS3Bucket
+                - !Sub "arn:aws:s3:::${PreExistingS3BucketToGrantRedshiftAccess}"
+                - !Ref 'AWS::NoValue'
+              - !If
+                - IsPreExistingS3Bucket
+                - !Sub "arn:aws:s3:::${PreExistingS3BucketToGrantRedshiftAccess}/*"
+                - !Ref 'AWS::NoValue'
+          - Effect: 'Allow'
+            Action:
+              - s3:PutObject
+            Resource:
+              - !Sub "arn:aws:s3:::${RedshiftS3Bucket}/*"
+              - !If
+                - IsPreExistingS3Bucket
+                - !Sub "arn:aws:s3:::${PreExistingS3BucketToGrantRedshiftAccess}/*"
+                - !Ref 'AWS::NoValue'
+
+  KinesisStreamPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      ManagedPolicyName: !Join ['-',['KinesisStream',!Ref 'AWS::StackName'],]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - kinesis:DescribeStream
+              - kinesis:PutRecord
+              - kinesis:PutRecords
+              - kinesis:GetShardIterator
+              - kinesis:GetRecords
+              - kinesis:ListShards
+              - kinesis:ListStreams
+              - kinesis:DescribeStreamSummary
+              - kinesis:RegisterStreamConsumer
+            Resource:
+              - !Sub "arn:aws:kinesis:${AWS::Region}:${AWS::AccountId}:stream/${KdsDataStream}"
+          - Effect: Allow
+            Action:
+              - kinesis:SubscribeToShard
+              - kinesis:DescribeStreamConsumer
+            Resource:
+              - !Sub "arn:aws:kinesis:${AWS::Region}:${AWS::AccountId}:stream/${KdsDataStream}/*"
+          - Effect: Allow
+            Action:
+              - cloudwatch:PutMetricData
+            Resource:
+              - "*"
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+            Resource:
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/LambdaFunction-${AWS::StackName}:*"
+
+  KinesisStreamRedshiftPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      ManagedPolicyName: !Join ['-',['KinesisStreamRS',!Ref 'AWS::StackName'],]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - kinesis:DescribeStreamSummary
+              - kinesis:GetShardIterator
+              - kinesis:GetRecords
+              - kinesis:DescribeStream
+            Resource:
+              - !Sub "arn:aws:kinesis:${AWS::Region}:${AWS::AccountId}:stream/*"
+          - Effect: Allow
+            Action:
+              - kinesis:ListStreams
+              - kinesis:ListShards
+            Resource:
+              - "*"
+
+  IamRoleRedshiftCluster:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service :
+                - redshift.amazonaws.com
+                - sagemaker.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      RoleName: !Sub "${AWS::StackName}-Redshift-${AWS::AccountId}-${AWS::Region}"
+      ManagedPolicyArns:
+        - !Ref RedshiftBucketAccessIamPolicy
+        - !Ref KinesisStreamRedshiftPolicy
+      Policies:
+        - PolicyName:
+            !Join [
+              '-',
+              [
+                'Sagemaker-Access-Policy',
+                !Ref 'AWS::StackName'
+              ],
+            ]
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sagemaker:*Job*
+                  - sagemaker:InvokeEndpoint
+                Resource:
+                  - '*'
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                  - iam:GetRole
+                Resource:
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-Redshift-${AWS::AccountId}-${AWS::Region}"
+
+  RedshiftClusterParameterGroup:
+    Type: AWS::Redshift::ClusterParameterGroup
+    Properties:
+      Description: Redshift Cluster Parameter Grup with Auto WLM
+      ParameterGroupFamily: redshift-1.0
+      Parameters:
+        - ParameterName: enable_user_activity_logging
+          ParameterValue: 'true'
+        - ParameterName: require_ssl
+          ParameterValue: 'true'
+        - ParameterName: auto_analyze
+          ParameterValue: 'true'
+        - ParameterName: max_concurrency_scaling_clusters
+          ParameterValue: '1'
+        - ParameterName: 'wlm_json_configuration'
+          ParameterValue: '[ { "query_group" : [ ],"query_group_wild_card" : 0,"user_group" : [ ],"user_group_wild_card" : 0,"concurrency_scaling" : "off","rules" : [ {  "rule_name" : "DiskSpilling",  "predicate" : [ { "metric_name" : "query_temp_blocks_to_disk", "operator" : ">", "value" : 100000  } ], "action" : "log"}, {  "rule_name" : "QueryRunningMoreThan30min",  "predicate" : [ { "metric_name" : "query_execution_time", "operator" : ">", "value" : 1800 } ],  "action" : "log"} ],"priority" : "normal","queue_type" : "auto","auto_wlm" : true }, {"short_query_queue" : true } ]'
+      Tags:
+        - Key: Name
+          Value:
+            !Join [
+              '-',
+              [
+                !Ref 'AWS::StackName',
+                'ClusterParametergroup',
+              ],
+            ]
+
+  RedshiftClusterSubnetGroup:
+    Type: 'AWS::Redshift::ClusterSubnetGroup'
+    Properties:
+      Description: Cluster subnet group
+      SubnetIds:
+        - !Ref RedShiftPublicSubnet1
+        - !Ref RedShiftPublicSubnet2
+
+  CMKeyRedshiftCluster:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: 'Customer managed key to be used for encryption at rest'
+      Enabled: Yes
+      EnableKeyRotation: Yes
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: key-default-1
+        Statement:
+          - Sid: Enable KMS Permissions for root account user
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: 'Allow access through RedShift for all principals in the account that are authorized to use RedShift'
+            Effect: 'Allow'
+            Principal:
+              AWS: '*'
+            Action:
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+              - 'kms:CreateGrant'
+              - 'kms:ListGrants'
+              - 'kms:DescribeKey'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'kms:CallerAccount': !Sub '${AWS::AccountId}'
+                'kms:ViaService': !Sub 'redshift.${AWS::Region}.amazonaws.com'
+
+  SecretRedshiftMasterUser:
+    Type: "AWS::SecretsManager::Secret"
+    Properties:
+      Description: "Secrets Manager to store Redshift master user credentials"
+      GenerateSecretString:
+        SecretStringTemplate: !Sub
+        - '{"username": "${MasterUsername}"}'
+        - {MasterUsername: !Ref MasterUsername}
+        GenerateStringKey: "password"
+        PasswordLength: !FindInMap [ Redshift, Password, Length]
+        ExcludePunctuation: true
+
+  RedshiftCluster:
+    Type: 'AWS::Redshift::Cluster'
+    DeletionPolicy: 'Delete'
+    UpdateReplacePolicy: 'Delete'
+    Properties:
+      ClusterType:
+        !If [RedshiftSingleNodeClusterCondition, 'single-node', 'multi-node']
+      ClusterIdentifier: !Ref ClusterName
+      NumberOfNodes:
+        !If [
+          RedshiftSingleNodeClusterCondition,
+          !Ref 'AWS::NoValue',
+          !Ref NumberOfNodes,
+        ]
+      NodeType: !Ref NodeType
+      DBName: !Ref DatabaseName
+      KmsKeyId: !Ref CMKeyRedshiftCluster
+      Encrypted: !FindInMap [ Redshift, Encrypted, Kms]
+      Port: !FindInMap [ Redshift, Port, Number]
+      MasterUsername: !Join ['', ['{{resolve:secretsmanager:', !Ref SecretRedshiftMasterUser, ':SecretString:username}}' ]]
+      MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref SecretRedshiftMasterUser, ':SecretString:password}}' ]]
+      ClusterParameterGroupName: !Ref RedshiftClusterParameterGroup
+      AvailabilityZoneRelocation:
+        !If [IsRA3, !FindInMap [ Redshift, AZ, Relocation], !Ref 'AWS::NoValue']
+      EnhancedVpcRouting: !FindInMap [ Redshift, VPC, EnhancedRouting]
+      VpcSecurityGroupIds:
+        - !Ref SecurityGroupRedshift
+      AutomatedSnapshotRetentionPeriod: !FindInMap [ Redshift, SnapshotRetention, Days]
+      PubliclyAccessible: !FindInMap [ Redshift, Accessible, Public]
+      ClusterSubnetGroupName: !Ref RedshiftClusterSubnetGroup
+      IamRoles:
+        - !GetAtt IamRoleRedshiftCluster.Arn
+      Tags:
+        - Key: Name
+          Value:
+            !Join [
+              '-',
+              [!Ref 'AWS::StackName', 'Redshift-Cluster'],
+            ]
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties :
+      AssumeRolePolicyDocument:
+        Version : 2012-10-17
+        Statement :
+          -
+            Effect : Allow
+            Principal :
+              Service :
+                - lambda.amazonaws.com
+            Action :
+              - sts:AssumeRole
+      Path : /
+      Policies:
+        -
+          PolicyName: LambdaCloudFormationPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - s3:*
+                Resource:
+                  - !Sub "arn:aws:s3:::cloudformation-custom-resource-response-${AWS::Region}"
+                  - !Sub "arn:aws:s3:::cloudformation-waitcondition-${AWS::Region}"
+                  - !Sub "arn:aws:s3:::cloudformation-custom-resource-response-${AWS::Region}/*"
+                  - !Sub "arn:aws:s3:::cloudformation-waitcondition-${AWS::Region}/*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+        - arn:aws:iam::aws:policy/AmazonRDSDataFullAccess
+        - arn:aws:iam::aws:policy/IAMFullAccess
+        - arn:aws:iam::aws:policy/AmazonRedshiftFullAccess
+
+  LambdaFunctionDefaultRole:
+    Type: AWS::Lambda::Function
+    Properties:
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import sys
+          import os
+          import json
+          import cfnresponse
+          import logging
+          from pip._internal import main
+
+          main(['install', 'boto3', '--target', '/tmp/'])
+          sys.path.insert(0,'/tmp/')
+
+          import boto3
+          from botocore.exceptions import ClientError
+
+          def lambda_handler(event, context):
+
+              print(boto3.__version__)
+
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {'Data': 'Delete complete'})
+              else:
+                  try:
+                      client = boto3.client('redshift')
+                      response = client.modify_cluster_iam_roles(
+                          ClusterIdentifier=os.environ['RedshiftClusterIdentifier'],
+                          DefaultIamRoleArn=os.environ['RedshiftClusterRole']
+                      )
+                      print(response)
+                  except Exception as e:
+                      logger.error(e)
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {'Data': 'Create failed'})
+
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, {'Data': 'Create complete'})
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Deployed Default Role')
+              }
+
+      Environment:
+        Variables:
+          RedshiftClusterIdentifier:
+            Ref: RedshiftCluster
+          RedshiftClusterRole:
+            Fn::GetAtt: [IamRoleRedshiftCluster, Arn]
+      Handler: index.lambda_handler
+      Role:
+        Fn::GetAtt: [LambdaRole, Arn]
+      Runtime: python3.9
+    DependsOn:
+      - LambdaRole
+      - RedshiftCluster
+      - IamRoleRedshiftCluster
+
+  PrimerInvokeDefaultRole:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn:
+      - LambdaFunctionDefaultRole
+    Version: "1.0"
+    Properties:
+      ServiceToken: !GetAtt 'LambdaFunctionDefaultRole.Arn'
+
+  SecretAttachmentRedshiftMasterUser:
+    Type: "AWS::SecretsManager::SecretTargetAttachment"
+    Properties:
+      SecretId: !Ref SecretRedshiftMasterUser
+      TargetId: !Ref RedshiftCluster
+      TargetType: AWS::Redshift::Cluster
+
+  LambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Description: lambda to generate random data
+      FunctionName: !Sub "LambdaFunction-${AWS::StackName}"
+      Handler: index.handler
+      Runtime: python3.8
+      Role: !GetAtt 'KinesisLambdaRole.Arn'
+      Timeout: 60
+      Environment:
+        Variables:
+          kinesis_stream: !Ref KdsDataStream
+          region_name: !Ref AWS::Region
+      Code:
+        ZipFile: |
+          import boto3
+          from datetime import datetime
+          import calendar
+          import random
+          import time
+          import json
+          import os
+          import csv
+          from time import sleep
+          from datetime import datetime
+          import uuid
+          #from faker import Faker
+
+
+          #faker = Faker()
+          k_client = boto3.client('kinesis', region_name=os.getenv('region_name'))
+          stream_name = os.getenv('kinesis_stream')
+          current_date = datetime.now()
+          start_range = int(current_date.strftime("%Y%m%d%H%M"))
+          end_range = start_range +  1000
+
+
+
+          def handler(event, context):
+
+              limit_rows = 1000
+              for i in range(limit_rows):
+                  data = {}
+                  data['TRANSACTION_ID'] = random.randint(start_range,end_range) #faker.uuid4()
+                  data['TX_DATETIME'] = datetime.now().isoformat(sep=' ')
+                  data['CUSTOMER_ID'] = random.randint(1,4999)
+                  data['TERMINAL_ID'] = random.randint(1,9999)
+                  data['TX_AMOUNT'] = random.uniform(5, 500)
+                  data['TX_TIME_SECONDS'] = random.randint(1000,86311)
+                  data['TX_TIME_DAYS'] = random.randint(0,0)
+
+                  k_client.put_record(Data=json.dumps(data).encode('utf-8'), StreamName=stream_name,PartitionKey='Demo')
+
+  KinesisLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description : IAM Role for lambda to generate data
+      AssumeRolePolicyDocument:
+          Version: 2012-10-17
+          Statement:
+            -
+              Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+                  - kinesis.amazonaws.com
+              Action:
+                - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref RedshiftBucketAccessIamPolicy
+        - !Ref RedshiftAccessIamPolicy
+        - !Ref KinesisStreamPolicy
+      Path: /
+
+  EventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: event to trigger lambda function
+      ScheduleExpression: rate(1 minute)
+      State: ENABLED
+      Targets:
+        - Arn:
+            Fn::GetAtt:
+              - LambdaFunction
+              - Arn
+          Id: "KinesisLambdaTarget"
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref "LambdaFunction"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn:
+        Fn::GetAtt:
+          - "EventRule"
+          - "Arn"
+
+  MVEventRole:
+    Type: AWS::IAM::Role
+    Properties :
+      AssumeRolePolicyDocument:
+        Version : 2012-10-17
+        Statement :
+          -
+            Effect : Allow
+            Principal :
+              Service :
+                - events.amazonaws.com
+            Action :
+              - sts:AssumeRole
+      Path : /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEventBridgeFullAccess
+        - arn:aws:iam::aws:policy/AmazonRedshiftFullAccess
+        - arn:aws:iam::aws:policy/AmazonRedshiftDataFullAccess
+
+  RunRefreshMVEvent:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Description: Redshift Event Rule to automatically refresh streaming view
+      ScheduleExpression: rate(1 minute)
+      Description: MV Refresh Event.
+      State: DISABLED
+      Targets:
+        - Arn: !Sub arn:aws:redshift:${AWS::Region}:${AWS::AccountId}:cluster:${ClusterName}
+          Id: 'RunRefreshMVEvent'
+          RoleArn:
+            Fn::GetAtt: [MVEventRole, Arn]
+          RedshiftDataParameters:
+            Database: 'dev'
+            DbUser: 'awsuser'
+            Sql: 'REFRESH MATERIALIZED VIEW cust_payment_tx_stream ;'
+            StatementName: 'Refresh MV'
+            WithEvent: true
+    DependsOn:
+      - RedshiftCluster
+
+
+# Create SageMaker apps
+##################################################################
+
+  JupyterApp:
+    Type: AWS::SageMaker::App
+    DependsOn: StudioUserProfile
+    Properties:
+      AppName: default
+      AppType: JupyterServer
+      DomainId: !GetAtt StudioDomain.DomainId
+      UserProfileName: !Ref UserProfileName
+
+  DataScienceApp:
+    Type: AWS::SageMaker::App
+    DependsOn: StudioUserProfile
+    Properties:
+      AppName: instance-event-engine-datascience-ml-t3-medium
+      AppType: KernelGateway
+      DomainId: !GetAtt StudioDomain.DomainId
+      ResourceSpec:
+        InstanceType:  ml.t3.medium
+        SageMakerImageArn: !FindInMap
+          - RegionMap
+          - !Ref 'AWS::Region'
+          - datascience
+      UserProfileName: !Ref UserProfileName
+
+  LKF:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join
+        - ''
+        - - 'https://'
+          - !Ref WSBucketName
+          - '.s3.amazonaws.com/'
+          - !Ref WSBucketPrefix
+          - 'end-to-end.yml'
+      TimeoutInMinutes: '60'
+      Parameters:
+        S3CertsZip: !Join
+          - ''
+          - - 's3://'
+            - !Ref WSBucketName
+            - '/'
+            - !Ref WSBucketPrefix
+            - 'certs.zip'
+
+  GDQ:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join
+        - ''
+        - - 'https://'
+          - !Ref WSBucketName
+          - '.s3.amazonaws.com/'
+          - !Ref WSBucketPrefix
+          - 'glue_dq_cf_stack.yml'
+      TimeoutInMinutes: '30'
+
+
+
+# Outputs
+#######################################################################
+
+Outputs:
+  VPCandCIDR:
+    Description: VPC ID and CIDR block
+    Value: !Join
+      - ' - '
+      - - !Ref VPC
+        - !GetAtt
+          - VPC
+          - CidrBlock
+
+  PublicSubnets:
+    Description: All public subnet created
+    Value: !Join
+      - ''
+      - - !Ref PublicSubnet1
+
+  PrivateSubnets:
+    Description: All private subnet created
+    Value: !Join
+      - ', '
+      - - !Ref PrivateSubnet1
+
+  SageMakerStudioVPCId:
+    Description: The ID of the Sagemaker Studio VPC
+    Value: !Ref VPC
+    Export:
+      Name: "SagemakerEMRNoAuthWithStudio-SagemakerStudioVPCId"
+
+  SageMakerStudioSubnetId:
+    Description: The Subnet Id of Sagemaker Studio
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: "SagemakerEMRNoAuthWithStudio-SagemakerStudioSubnetId"
+
+  SageMakerStudioSecurityGroup:
+    Description: The Security group of Sagemaker Studio instance
+    Value: !Ref SageMakerInstanceSecurityGroup
+    Export:
+      Name: "SagemakerEMRNoAuthWithStudio-SagemakerStudioSecurityGroup"
+
+  SageMakerStudioDomain:
+    Description: The Domain ID of the created Studio domain
+    Value: !Ref StudioDomain
+
+  S3Bucket:
+    Description: Bucket created for the workshop
+    Value: !Ref S3Bucket
+
+  RedshiftS3Bucket:
+    Description: S3 bucket for Redshift cluster
+    Value: !Ref RedshiftS3Bucket
+
+  IamRoleRedshiftCluster:
+    Description: Redshift cluster IAM role
+    Value: !Ref IamRoleRedshiftCluster
+
+  SecretRedshiftMasterUserSecret:
+    Description: Redshift Secret manager master user
+    Value: !Ref SecretRedshiftMasterUser
+
+  RedshiftClusterEndpoint:
+    Description: Redshift cluster endpoint
+    Value: !Sub "redshift://${RedshiftCluster.Endpoint.Address}:${RedshiftCluster.Endpoint.Port}/${DatabaseName}"
+
+  RedshiftClusterJDBCUrl:
+    Description: Redshift cluster jdbc url
+    Value: !Sub "jdbc:redshift://${RedshiftCluster.Endpoint.Address}:${RedshiftCluster.Endpoint.Port}/${DatabaseName}"
+
+  DataStreamName:
+    Description: Name of the Amazon Kinesis Data stream
+    Value: !Ref KdsDataStream
+
+  EventRuleName:
+    Description: Name of the Event Rule to trigger lambda function
+    Value: !Ref EventRule
+
+  MVRefreshEventRuleName:
+    Description: Name of the Event Rule to refresh Redshfit MV
+    Value: !Ref RunRefreshMVEvent

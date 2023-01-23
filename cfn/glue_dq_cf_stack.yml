@@ -1,0 +1,384 @@
+Resources:
+  S3Bucket3FEEDC04:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      Tags:
+        - Key: 'aws-cdk:auto-delete-objects'
+          Value: 'true'
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      'aws:cdk:path': GlueDataQualityStudio/S3-Bucket-/Resource
+  S3BucketPolicyB969876F:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref S3Bucket3FEEDC04
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:GetBucket*'
+              - 's3:List*'
+              - 's3:DeleteObject*'
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt
+                - CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092
+                - Arn
+            Resource:
+              - !GetAtt
+                - S3Bucket3FEEDC04
+                - Arn
+              - !Join
+                - ''
+                - - !GetAtt
+                    - S3Bucket3FEEDC04
+                    - Arn
+                  - /*
+        Version: 2012-10-17
+    Metadata:
+      'aws:cdk:path': GlueDataQualityStudio/S3-Bucket-/Policy/Resource
+  S3BucketAutoDeleteObjectsCustomResource93549666:
+    Type: 'Custom::S3AutoDeleteObjects'
+    Properties:
+      ServiceToken: !GetAtt
+        - CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F
+        - Arn
+      BucketName: !Ref S3Bucket3FEEDC04
+    DependsOn:
+      - S3BucketPolicyB969876F
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      'aws:cdk:path': GlueDataQualityStudio/S3-Bucket-/AutoDeleteObjectsCustomResource/Default
+  CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+      ManagedPolicyArns:
+        - !Sub >-
+          arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+    Metadata:
+      'aws:cdk:path': >-
+        GlueDataQualityStudio/Custom::S3AutoDeleteObjectsCustomResourceProvider/Role
+  CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Sub aws-bigdata-blog
+        S3Key: >-
+          artifacts/bdb-2823-data-quality-studio-exp/1f7e277bd526ebce1983fa1e7a84a5281ec533d9187caaebb773681bbf7bf4c.zip
+      Timeout: 900
+      MemorySize: 128
+      Handler: __entrypoint__.handler
+      Role: !GetAtt
+        - CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092
+        - Arn
+      Runtime: nodejs12.x
+      Description: !Join
+        - ''
+        - - 'Lambda function for auto-deleting objects in '
+          - !Ref S3Bucket3FEEDC04
+          - ' S3 bucket.'
+    DependsOn:
+      - CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092
+    Metadata:
+      'aws:cdk:path': >-
+        GlueDataQualityStudio/Custom::S3AutoDeleteObjectsCustomResourceProvider/Handler
+      'aws:asset:path': asset.1f7e277bd526ebce1983fa1e7a84a5281ec533d9187caaebb773681bbf7bf4c1
+      'aws:asset:property': Code
+  s3providerlambdaRole7524071B:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Join
+          - ''
+          - - 'arn:'
+            - !Ref 'AWS::Partition'
+            - ':iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - !Join
+          - ''
+          - - 'arn:'
+            - !Ref 'AWS::Partition'
+            - ':iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole'
+    Metadata:
+      'aws:cdk:path': GlueDataQualityStudio/s3-provider/lambdaRole/Resource
+  s3providerlambdaRoleDefaultPolicy5C093915:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:GetObject*'
+              - 's3:GetBucket*'
+              - 's3:List*'
+              - 's3:DeleteObject*'
+              - 's3:PutObject*'
+              - 's3:Abort*'
+              - 's3:GetObjectTagging'
+              - 's3:PutObjectTagging'
+            Effect: Allow
+            Resource:
+              - !GetAtt
+                - S3Bucket3FEEDC04
+                - Arn
+              - !Join
+                - ''
+                - - !GetAtt
+                    - S3Bucket3FEEDC04
+                    - Arn
+                  - /*
+        Version: 2012-10-17
+      PolicyName: s3providerlambdaRoleDefaultPolicy5C093915
+      Roles:
+        - !Ref s3providerlambdaRole7524071B
+    Metadata:
+      'aws:cdk:path': GlueDataQualityStudio/s3-provider/lambdaRole/DefaultPolicy/Resource
+  s3providers3objectfunction9C12F646:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Sub aws-bigdata-blog
+        S3Key: >-
+          artifacts/bdb-2823-data-quality-studio-exp/9f4360d413c8372b30b93fd11c6fa859353f4a5a5eae6c8d01a0566f9bc5116d.zip
+      Role: !GetAtt
+        - s3providerlambdaRole7524071B
+        - Arn
+      Environment:
+        Variables:
+          BucketName: !Ref S3Bucket3FEEDC04
+          BucketArn: !GetAtt
+            - S3Bucket3FEEDC04
+            - Arn
+          AccountID: !Ref 'AWS::AccountId'
+      Handler: s3_obj_provider_handler.on_event
+      Runtime: python3.9
+      Timeout: 300
+    DependsOn:
+      - s3providerlambdaRoleDefaultPolicy5C093915
+      - s3providerlambdaRole7524071B
+    Metadata:
+      'aws:cdk:path': GlueDataQualityStudio/s3-provider/s3-object-function/Resource
+      'aws:asset:path': asset.9f4360d413c8372b30b93fd11c6fa859353f4a5a5eae6c8d01a0566f9bc5116d
+      'aws:asset:is-bundled': false
+      'aws:asset:property': Code
+  s3providerMyProviderframeworkonEventServiceRole56F4288A:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Join
+          - ''
+          - - 'arn:'
+            - !Ref 'AWS::Partition'
+            - ':iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+    Metadata:
+      'aws:cdk:path': >-
+        GlueDataQualityStudio/s3-provider/MyProvider/framework-onEvent/ServiceRole/Resource
+  s3providerMyProviderframeworkonEventServiceRoleDefaultPolicy0EA89651:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: 'lambda:InvokeFunction'
+            Effect: Allow
+            Resource: !GetAtt
+              - s3providers3objectfunction9C12F646
+              - Arn
+        Version: 2012-10-17
+      PolicyName: s3providerMyProviderframeworkonEventServiceRoleDefaultPolicy0EA89651
+      Roles:
+        - !Ref s3providerMyProviderframeworkonEventServiceRole56F4288A
+    Metadata:
+      'aws:cdk:path': >-
+        GlueDataQualityStudio/s3-provider/MyProvider/framework-onEvent/ServiceRole/DefaultPolicy/Resource
+  s3providerMyProviderframeworkonEvent09E95FD4:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Sub aws-bigdata-blog
+        S3Key: >-
+          artifacts/bdb-2823-data-quality-studio-exp/c691172cdeefa2c91b5a2907f9d81118e47597634943344795f1a844192dd49c.zip
+      Role: !GetAtt
+        - s3providerMyProviderframeworkonEventServiceRole56F4288A
+        - Arn
+      Description: >-
+        AWS CDK resource provider framework - onEvent
+        (GlueDataQualityStudio/s3-provider/MyProvider)
+      Environment:
+        Variables:
+          USER_ON_EVENT_FUNCTION_ARN: !GetAtt
+            - s3providers3objectfunction9C12F646
+            - Arn
+      Handler: framework.onEvent
+      Runtime: nodejs12.x
+      Timeout: 900
+    DependsOn:
+      - s3providerMyProviderframeworkonEventServiceRoleDefaultPolicy0EA89651
+      - s3providerMyProviderframeworkonEventServiceRole56F4288A
+    Metadata:
+      'aws:cdk:path': GlueDataQualityStudio/s3-provider/MyProvider/framework-onEvent/Resource
+      'aws:asset:path': asset.c691172cdeefa2c91b5a2907f9d81118e47597634943344795f1a844192dd49c
+      'aws:asset:is-bundled': false
+      'aws:asset:property': Code
+  s3providerresource14D7540E2:
+    Type: 'AWS::CloudFormation::CustomResource'
+    Properties:
+      ServiceToken: !GetAtt
+        - s3providerMyProviderframeworkonEvent09E95FD4
+        - Arn
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      'aws:cdk:path': GlueDataQualityStudio/s3-provider/resource1/Default
+  GlueProviderGlueDataQualityBlogFAD7BFFD:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - !Join
+          - ''
+          - - 'arn:'
+            - !Ref 'AWS::Partition'
+            - ':iam::aws:policy/service-role/AWSGlueServiceRole'
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - 's3:GetObject*'
+                  - 's3:GetBucket*'
+                  - 's3:List*'
+                  - 's3:DeleteObject*'
+                  - 's3:PutObject*'
+                  - 's3:Abort*'
+                Effect: Allow
+                Resource:
+                  - !GetAtt
+                    - S3Bucket3FEEDC04
+                    - Arn
+                  - !Join
+                    - ''
+                    - - !GetAtt
+                        - S3Bucket3FEEDC04
+                        - Arn
+                      - /*
+            Version: 2012-10-17
+          PolicyName: s3permissions
+    DependsOn:
+      - s3providerlambdaRoleDefaultPolicy5C093915
+      - s3providerlambdaRole7524071B
+      - s3providerMyProviderframeworkonEvent09E95FD4
+      - s3providerMyProviderframeworkonEventServiceRoleDefaultPolicy0EA89651
+      - s3providerMyProviderframeworkonEventServiceRole56F4288A
+      - s3providerresource14D7540E2
+      - s3providers3objectfunction9C12F646
+    Metadata:
+      'aws:cdk:path': GlueDataQualityStudio/Glue Provider/GlueDataQualityBlog-/Resource
+  CDKMetadata:
+    Type: 'AWS::CDK::Metadata'
+    Properties:
+      Analytics: >-
+        v2:deflate64:H4sIAAAAAAAA/1VPSw6CMBA9i/syGlkYl0riVoIHILVUHKGt6bQa0nB3gSLG1Xsz75OZLWxhs+JvSkTVJC1eIVwcFw0bVmWgFMLRi0Y6lt30zCLkpkXR/dbzHIcjJ9kz5ApCYVo5uib8hSLrWcvVteIQTl4Lh0aP2pf3jNKSE0lHcBihZ5knZ1QhyXgrYu/C/6TcmhdW0rIpOLxUo66ZmDylnU0Ei21oOnv39NOjmdEVxgvyzt2NXqewg/3qQYiJ9dqhklBE/ADsuz9UQQEAAA==
+    Metadata:
+      'aws:cdk:path': GlueDataQualityStudio/CDKMetadata/Default
+    Condition: CDKMetadataAvailable
+Outputs:
+  BucketName:
+    Value: !Ref S3Bucket3FEEDC04
+  AccountID:
+    Value: !Ref 'AWS::AccountId'
+Conditions:
+  CDKMetadataAvailable: !Or
+    - !Or
+      - !Equals
+        - !Ref 'AWS::Region'
+        - af-south-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - ap-east-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - ap-northeast-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - ap-northeast-2
+      - !Equals
+        - !Ref 'AWS::Region'
+        - ap-south-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - ap-southeast-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - ap-southeast-2
+      - !Equals
+        - !Ref 'AWS::Region'
+        - ca-central-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - cn-north-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - cn-northwest-1
+    - !Or
+      - !Equals
+        - !Ref 'AWS::Region'
+        - eu-central-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - eu-north-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - eu-south-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - eu-west-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - eu-west-2
+      - !Equals
+        - !Ref 'AWS::Region'
+        - eu-west-3
+      - !Equals
+        - !Ref 'AWS::Region'
+        - me-south-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - sa-east-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - us-east-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - us-east-2
+    - !Or
+      - !Equals
+        - !Ref 'AWS::Region'
+        - us-west-1
+      - !Equals
+        - !Ref 'AWS::Region'
+        - us-west-2
